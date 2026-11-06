@@ -88,7 +88,8 @@ public class AuthListener implements Listener {
 
     private void showRegisterScreen(Player player) {
         // Show title
-        String title = plugin.getConfig().getString("join_screen.register.title", "&b&lWelcome!");
+        String title = plugin.getConfig().getString("join_screen.register.title", "&b&lWelcome, %player%!")
+                .replace("%player%", player.getName());
         String subtitle = plugin.getConfig().getString("join_screen.register.subtitle", "&7New here? Create an account below");
         
         player.sendTitle(
@@ -116,7 +117,8 @@ public class AuthListener implements Listener {
 
     private void showLoginScreen(Player player) {
         // Show title
-        String title = plugin.getConfig().getString("join_screen.login.title", "&a&lWelcome Back!");
+        String title = plugin.getConfig().getString("join_screen.login.title", "&b&lWelcome, %player%!")
+                .replace("%player%", player.getName());
         String subtitle = plugin.getConfig().getString("join_screen.login.subtitle", "&7Please login to continue");
         
         player.sendTitle(

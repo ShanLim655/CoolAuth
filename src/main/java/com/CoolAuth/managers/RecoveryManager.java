@@ -263,6 +263,7 @@ public class RecoveryManager {
         if (request == null) return;
 
         storage.removeUser(request.uuid);
+        plugin.getAuthManager().removeSession(request.uuid);
         approvedRecoveries.add(request.uuid);
 
         Player player = Bukkit.getPlayer(request.uuid);

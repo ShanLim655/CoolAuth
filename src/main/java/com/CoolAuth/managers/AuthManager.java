@@ -5,7 +5,11 @@ import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.potion.PotionEffectType;
 import org.bukkit.scheduler.BukkitRunnable;
+import org.bukkit.configuration.file.FileConfiguration;
+import org.bukkit.configuration.file.YamlConfiguration;
 
+import java.io.File;
+import java.io.IOException;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -19,6 +23,8 @@ public class AuthManager {
     private final Map<UUID, Integer> timeoutTasks = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> loginAttempts = new ConcurrentHashMap<>();
     private final Map<UUID, Session> sessions = new ConcurrentHashMap<>();
+    private final File sessionsFile;
+    private final FileConfiguration sessionsConfig;
 
     // Recovery chat input
     private final Set<UUID> awaitingRecoveryInput = ConcurrentHashMap.newKeySet();
@@ -28,13 +34,69 @@ public class AuthManager {
     private final int maxAttempts;
     private final int sessionMinutes;
 
-    public record Session(String ip, long expiryTime) {}
+    public record Session(String ip, String username, long expiryTime) {}
 
     public AuthManager(CoolAuth plugin) {
         this.plugin = plugin;
         this.timeoutSeconds = plugin.getConfig().getInt("security.auth_timeout", 30);
         this.maxAttempts = plugin.getConfig().getInt("security.max_login_attempts", 3);
-        this.sessionMinutes = plugin.getConfig().getInt("security.session_timeout", 10);
+        int configuredSessionMinutes = plugin.getConfig().getInt("security.session_timeout", 240);
+        // 220 was the bundled default before the four-hour session feature.
+        if (configuredSessionMinutes == 220) {
+            configuredSessionMinutes = 240;
+            plugin.getConfig().set("security.session_timeout", configuredSessionMinutes);
+            plugin.saveConfig();
+        }
+        this.sessionMinutes = Math.max(0, configuredSessionMinutes);
+        this.sessionsFile = new File(plugin.getDataFolder(), "sessions.yml");
+        this.sessionsConfig = YamlConfiguration.loadConfiguration(sessionsFile);
+        loadSessions();
+        new BukkitRunnable() {
+            @Override public void run() { expireSessions(); }
+        }.runTaskTimer(plugin, 20L * 60L, 20L * 60L);
+    }
+
+    private void loadSessions() {
+        long now = System.currentTimeMillis();
+        for (String key : sessionsConfig.getKeys(false)) {
+            try {
+                UUID uuid = UUID.fromString(key);
+                String ip = sessionsConfig.getString(key + ".ip");
+                String username = sessionsConfig.getString(key + ".username");
+                long expiry = sessionsConfig.getLong(key + ".expires", 0L);
+                if (ip != null && username != null && expiry > now) {
+                    sessions.put(uuid, new Session(ip, username, expiry));
+                } else {
+                    sessionsConfig.set(key, null);
+                }
+            } catch (IllegalArgumentException ignored) {
+                sessionsConfig.set(key, null);
+            }
+        }
+        saveSessions();
+    }
+
+    private void saveSessions() {
+        try {
+            sessionsConfig.save(sessionsFile);
+        } catch (IOException e) {
+            plugin.getLogger().severe("Unable to save authentication sessions: " + e.getMessage());
+        }
+    }
+
+    private void expireSessions() {
+        long now = System.currentTimeMillis();
+        boolean changed = sessions.entrySet().removeIf(entry -> entry.getValue().expiryTime() <= now);
+        if (changed) {
+            for (String key : sessionsConfig.getKeys(false)) {
+                try {
+                    if (!sessions.containsKey(UUID.fromString(key))) sessionsConfig.set(key, null);
+                } catch (IllegalArgumentException ignored) {
+                    sessionsConfig.set(key, null);
+                }
+            }
+            saveSessions();
+        }
     }
 
     // --- Authentication State ---
@@ -80,24 +142,38 @@ public class AuthManager {
         Session session = sessions.get(uuid);
         String currentIp = player.getAddress().getAddress().getHostAddress();
 
-        if (System.currentTimeMillis() < session.expiryTime && session.ip.equals(currentIp)) {
+        if (System.currentTimeMillis() < session.expiryTime()
+                && session.ip().equals(currentIp)
+                && session.username().equals(player.getName())) {
             return true;
         }
 
-        sessions.remove(uuid);
+        removeSession(uuid);
         return false;
     }
 
     public void createSession(Player player) {
         if (sessionMinutes <= 0) return;
 
-        long expiry = System.currentTimeMillis() + (sessionMinutes * 60 * 1000L);
+        long expiry = System.currentTimeMillis() + (sessionMinutes * 60_000L);
         String ip = player.getAddress().getAddress().getHostAddress();
-        sessions.put(player.getUniqueId(), new Session(ip, expiry));
+        UUID uuid = player.getUniqueId();
+        Session session = new Session(ip, player.getName(), expiry);
+        sessions.put(uuid, session);
+        sessionsConfig.set(uuid + ".ip", ip);
+        sessionsConfig.set(uuid + ".username", player.getName());
+        sessionsConfig.set(uuid + ".expires", expiry);
+        saveSessions();
     }
 
     public void removeSession(UUID uuid) {
-        sessions.remove(uuid);
+        Runnable revoke = () -> {
+            sessions.remove(uuid);
+            sessionsConfig.set(uuid.toString(), null);
+            saveSessions();
+        };
+        if (Bukkit.isPrimaryThread()) revoke.run();
+        else Bukkit.getScheduler().runTask(plugin, revoke);
     }
 
     // --- Timeout Tasks ---
@@ -137,7 +213,9 @@ public class AuthManager {
             player.removePotionEffect(PotionEffectType.BLINDNESS);
             player.resetTitle();
 
-            createSession(player);
+            // A restored session keeps its original expiry; reconnecting must not
+            // extend the four-hour trust window indefinitely.
+            if (!sessionResumed) createSession(player);
 
             if (sessionResumed) {
                 player.sendMessage(plugin.color(plugin.getPrefix() + plugin.getMessage("session_restored")));
@@ -174,7 +252,6 @@ public class AuthManager {
 
     public void cleanupPlayer(UUID uuid) {
         authenticatedPlayers.remove(uuid);
-        loginAttempts.remove(uuid);
         awaitingRecoveryInput.remove(uuid);
         pendingRecoveryReason.remove(uuid);
         cancelTimeoutTask(uuid);
@@ -183,5 +260,6 @@ public class AuthManager {
     public void shutdown() {
         timeoutTasks.values().forEach(Bukkit.getScheduler()::cancelTask);
         timeoutTasks.clear();
+        saveSessions();
     }
 }

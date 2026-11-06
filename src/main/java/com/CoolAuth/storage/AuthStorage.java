@@ -13,11 +13,18 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.security.SecureRandom;
+import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.PBEKeySpec;
 import java.sql.*;
 import java.util.*;
 import java.util.logging.Level;
 
 public class AuthStorage {
+
+    private static final int PBKDF2_ITERATIONS = 210_000;
+    private static final int PBKDF2_BITS = 256;
+    private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
     private final CoolAuth plugin;
     private Connection connection;
@@ -41,13 +48,7 @@ public class AuthStorage {
         this.secretKey = plugin.getConfig().getString("security.encryption_key", "ChangeMe12345678");
         this.bcryptRounds = plugin.getConfig().getInt("security.bcrypt_rounds", 10);
 
-        if (encryptionType.equals("TWE") && secretKey.length() != 16) {
-            plugin.getLogger().warning("For TWE (AES), encryption key MUST be 16 characters! Falling back to BCRYPT.");
-        }
-
-        if (encryptionType.equals("BCRYPT")) {
-            plugin.getLogger().info("Using BCrypt encryption with " + bcryptRounds + " rounds.");
-        }
+        if (!encrypt) plugin.getLogger().warning("security.encrypt_passwords=false is deprecated; new passwords are always hashed securely.");
 
         initialize();
     }
@@ -274,14 +275,30 @@ public class AuthStorage {
         }
 
         if (storedPass == null) return false;
-        if (!encrypt) return inputPassword.equals(storedPass);
-
-        return switch (encryptionType) {
-            case "OWE" -> hashOWE(inputPassword).equals(storedPass);
-            case "TWE" -> inputPassword.equals(decryptTWE(storedPass));
-            case "BCRYPT" -> BCrypt.checkpw(inputPassword, storedPass);
-            default -> inputPassword.equals(storedPass);
-        };
+        boolean modernHash = storedPass.startsWith("pbkdf2$");
+        boolean valid;
+        try {
+            if (modernHash) {
+                valid = verifyPbkdf2(inputPassword, storedPass);
+            } else if (!encrypt) {
+                valid = MessageDigest.isEqual(inputPassword.getBytes(StandardCharsets.UTF_8),
+                        storedPass.getBytes(StandardCharsets.UTF_8));
+            } else {
+                valid = switch (encryptionType) {
+                    case "OWE" -> MessageDigest.isEqual(hashOWE(inputPassword).getBytes(StandardCharsets.UTF_8),
+                            storedPass.getBytes(StandardCharsets.UTF_8));
+                    case "TWE" -> MessageDigest.isEqual(inputPassword.getBytes(StandardCharsets.UTF_8),
+                            decryptTWE(storedPass).getBytes(StandardCharsets.UTF_8));
+                    case "BCRYPT" -> BCrypt.checkpw(inputPassword, storedPass);
+                    default -> false;
+                };
+            }
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
+        // Upgrade legacy hashes after a successful login.
+        if (valid && !modernHash) updatePassword(uuid, inputPassword);
+        return valid;
     }
 
     public void updatePlayerInfo(Player player) {
@@ -412,14 +429,37 @@ public class AuthStorage {
     // --- Encryption ---
 
     private String encryptPassword(String rawPassword) {
-        if (!encrypt) return rawPassword;
+        byte[] salt = new byte[16];
+        SECURE_RANDOM.nextBytes(salt);
+        byte[] hash = derivePbkdf2(rawPassword, salt, PBKDF2_ITERATIONS);
+        return "pbkdf2$" + PBKDF2_ITERATIONS + "$" + Base64.getEncoder().withoutPadding().encodeToString(salt)
+                + "$" + Base64.getEncoder().withoutPadding().encodeToString(hash);
+    }
 
-        return switch (encryptionType) {
-            case "OWE" -> hashOWE(rawPassword);
-            case "TWE" -> encryptTWE(rawPassword);
-            case "BCRYPT" -> BCrypt.hashpw(rawPassword, BCrypt.gensalt(bcryptRounds));
-            default -> rawPassword;
-        };
+    private boolean verifyPbkdf2(String password, String encoded) {
+        String[] parts = encoded.split("\\$", -1);
+        if (parts.length != 4) return false;
+        try {
+            int iterations = Integer.parseInt(parts[1]);
+            if (iterations < 100_000 || iterations > 1_000_000) return false;
+            byte[] salt = Base64.getDecoder().decode(parts[2]);
+            byte[] expected = Base64.getDecoder().decode(parts[3]);
+            if (salt.length < 16 || expected.length != PBKDF2_BITS / 8) return false;
+            return MessageDigest.isEqual(expected, derivePbkdf2(password, salt, iterations));
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
+    }
+
+    private byte[] derivePbkdf2(String password, byte[] salt, int iterations) {
+        PBEKeySpec spec = new PBEKeySpec(password.toCharArray(), salt, iterations, PBKDF2_BITS);
+        try {
+            return SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).getEncoded();
+        } catch (Exception e) {
+            throw new IllegalStateException("Unable to hash password securely", e);
+        } finally {
+            spec.clearPassword();
+        }
     }
 
     private String hashOWE(String password) {
@@ -429,8 +469,7 @@ public class AuthStorage {
             byte[] encodedhash = digest.digest(salted.getBytes(StandardCharsets.UTF_8));
             return bytesToHex(encodedhash);
         } catch (Exception e) {
-            e.printStackTrace();
-            return password;
+            throw new IllegalStateException("Unable to hash password securely", e);
         }
     }
 
@@ -450,8 +489,7 @@ public class AuthStorage {
             cipher.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(secretKey.getBytes(StandardCharsets.UTF_8), "AES"));
             return Base64.getEncoder().encodeToString(cipher.doFinal(strToEncrypt.getBytes(StandardCharsets.UTF_8)));
         } catch (Exception e) {
-            e.printStackTrace();
-            return strToEncrypt;
+            throw new IllegalStateException("Unable to encrypt legacy password format", e);
         }
     }
 
@@ -461,8 +499,7 @@ public class AuthStorage {
             cipher.init(Cipher.DECRYPT_MODE, new SecretKeySpec(secretKey.getBytes(StandardCharsets.UTF_8), "AES"));
             return new String(cipher.doFinal(Base64.getDecoder().decode(strToDecrypt)));
         } catch (Exception e) {
-            e.printStackTrace();
-            return strToDecrypt;
+            throw new IllegalArgumentException("Invalid legacy encrypted password", e);
         }
     }
     }
