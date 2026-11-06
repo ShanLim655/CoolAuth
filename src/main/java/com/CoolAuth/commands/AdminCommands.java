@@ -85,6 +85,7 @@ public class AdminCommands implements CommandExecutor, TabCompleter {
             }
 
             storage.removeUser(targetUUID);
+            authManager.removeSession(targetUUID);
             sender.sendMessage(plugin.color(plugin.getPrefix() + plugin.getMessage("admin_success")));
 
             if (target.isOnline()) {
@@ -122,6 +123,7 @@ public class AdminCommands implements CommandExecutor, TabCompleter {
             }
 
             storage.updatePassword(targetUUID, newPassword);
+            authManager.removeSession(targetUUID);
             sender.sendMessage(plugin.color(plugin.getPrefix() + plugin.getMessage("admin_success")));
         });
     }

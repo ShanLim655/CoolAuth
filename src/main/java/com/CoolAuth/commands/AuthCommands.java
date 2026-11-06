@@ -163,7 +163,6 @@ public class AuthCommands implements CommandExecutor {
 
             if (attempts >= maxAttempts) {
                 player.kickPlayer(plugin.color(plugin.getMessage("max_attempts")));
-                authManager.resetLoginAttempts(player.getUniqueId());
             } else {
                 player.sendMessage(plugin.color(plugin.getPrefix() +
                         plugin.getMessage("wrong_password") + " &7(" + attempts + "/" + maxAttempts + ")"));

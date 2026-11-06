@@ -17,13 +17,13 @@ storage:
   table_prefix: "coolauth_"
 
 security:
-  encrypt_passwords: true
-  encryption_key: "ChangeMe12345678" # Must be 16 chars for TWE
-  encryption_type: "BCRYPT" # Options: "OWE" (SHA-256), "TWE" (AES), "BCRYPT"
-  bcrypt_rounds: 10 # 10-12 recommended, higher = slower but more secure
+  encrypt_passwords: true # Legacy plaintext compatibility switch; new passwords are always hashed.
+  encryption_key: "ChangeMe12345678" # Used only to verify legacy OWE/TWE password records.
+  encryption_type: "BCRYPT" # Legacy format for existing records; new passwords use salted PBKDF2.
+  bcrypt_rounds: 10 # Legacy BCrypt setting for existing records.
   auth_timeout: 40 # Seconds to login before kick
   max_login_attempts: 3 # Kicks after this many wrong passwords
-  session_timeout: 220 # Minutes. If 0, sessions are disabled.
+  session_timeout: 240 # Minutes. If 0, sessions are disabled.
   banned_ips: []
 
 # Password strength requirements
@@ -56,11 +56,11 @@ recovery:
 join_screen:
   # For new players (not registered)
   register:
-    title: "&b&lWelcome!"
+    title: "&b&lWelcome, %player%!"
     subtitle: "&7New here? Create an account below"
   # For existing players (registered)
   login:
-    title: "&a&lWelcome Back!"
+    title: "&b&lWelcome, %player%!"
     subtitle: "&7Please login to continue"
   # Action bar messages (shown repeatedly)
   actionbar_register: "&e/register <password> <password>"
@@ -75,7 +75,7 @@ messages:
   register_instructions:
     - ""
     - "&b&l━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    - "&f&l  Welcome to the server!"
+    - "&b&l  Welcome to the server!"
     - "&b&l━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     - ""
     - "&7  You need to &aregister &7to play."
@@ -94,7 +94,7 @@ messages:
   login_instructions:
     - ""
     - "&a&l━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    - "&f&l  Welcome back!"
+    - "&b&l  Welcome back!"
     - "&a&l━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     - ""
     - "&7  Please &alogin &7to continue playing."
