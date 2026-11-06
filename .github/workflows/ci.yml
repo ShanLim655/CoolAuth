@@ -1,0 +1,36 @@
+name: Build CoolAuth
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Build plugin
+        run: mvn --batch-mode --no-transfer-progress clean package
+
+      - name: Upload plugin JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: CoolAuth-jar
+          path: target/CoolAuth-*.jar
+          if-no-files-found: error
+          retention-days: 30
